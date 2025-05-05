@@ -6,8 +6,6 @@ This application provides an advanced agentic data visualization platform powere
 
 *Screenshot: Side-by-side Plotly and ECharts visualizations with code display*
 
-> Note: To add a screenshot, take a screenshot of the application in use and save it as `docs/screenshot.png`
-
 ## Current Status and Limitations
 
 While the system has been enhanced with several improvements, it currently has some limitations in flexibility:
