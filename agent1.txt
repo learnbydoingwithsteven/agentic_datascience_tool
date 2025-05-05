@@ -1,0 +1,856 @@
+Okay, let's evolve the application to incorporate CrewAI for generating exploratory plots based on user requests. This introduces significant changes, primarily on the backend.
+
+Conceptual Shift:
+
+Instead of the frontend knowing which plots to create, the user will provide a natural language request (e.g., "Show the distribution of petal lengths", "Compare sepal width vs sepal length", "Show counts for each species").
+
+The backend will use a CrewAI agent group to:
+
+Understand the user's request.
+
+Analyze the specified dataset.
+
+Determine appropriate exploratory plots (e.g., histograms, scatter plots, bar charts).
+
+Generate the necessary configuration data (JSON) for both Plotly.js and ECharts for those plots.
+
+The frontend will receive these plot configurations and render them using the respective libraries.
+
+New Technologies/Libraries:
+
+Backend: crewai, crewai[tools], langchain_openai (or another LLM provider like langchain_groq, langchain_anthropic, etc.), python-dotenv (for API keys).
+
+LLM Access: You'll need an API key for an LLM provider (like OpenAI, Groq, Anthropic).
+
+Revised Project Structure (Illustrative):
+
+data-viz-app/
+├── backend/
+│   ├── app.py            # Flask application (modified)
+│   ├── crew_defs.py      # CrewAI Agent/Task/Tool definitions
+│   ├── data_tools.py     # Custom CrewAI tools for data handling
+│   ├── datasets/
+│   │   └── ... (CSV files)
+│   ├── requirements.txt  # Updated dependencies
+│   ├── .env              # To store API keys (add to .gitignore!)
+│   └── venv/
+│
+└── frontend/
+    ├── src/
+    │   ├── components/
+    │   │   ├── DatasetSelector.js
+    │   │   ├── PlotlyDashboard.js # Modified to accept config
+    │   │   ├── EchartsDashboard.js # Modified to accept config
+    │   │   └── UserRequestInput.js # New component
+    │   ├── App.js            # Modified
+    │   └── ...
+    ├── package.json
+    └── ...
+
+
+Phase 2: Integrating CrewAI
+
+Step 1: Backend Modifications (Flask + CrewAI)
+
+Install New Dependencies:
+
+cd backend
+source venv/bin/activate # Or venv\Scripts\activate on Windows
+pip install crewai crewai[tools] langchain_openai python-dotenv pandas # Or langchain_groq, etc.
+# Add any other necessary langchain provider libraries
+pip freeze > requirements.txt
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Bash
+IGNORE_WHEN_COPYING_END
+
+Create .env file: In the backend directory, create a file named .env and add your LLM API key:
+
+# Example for OpenAI
+OPENAI_API_KEY="your_openai_api_key_here"
+# OPENAI_MODEL_NAME="gpt-4o" # Optional: specify model
+
+# Example for Groq
+# GROQ_API_KEY="your_groq_api_key_here"
+# GROQ_MODEL_NAME="llama3-70b-8192"
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+IGNORE_WHEN_COPYING_END
+
+Important: Add .env to your .gitignore file to avoid committing secrets.
+
+Create backend/data_tools.py (Custom Tools): Define tools for agents to interact with datasets.
+
+import os
+import pandas as pd
+from crewai_tools import BaseTool
+import io # To capture print output like df.info()
+
+DATASET_FOLDER = 'datasets'
+
+class DatasetLoadingTool(BaseTool):
+    name: str = "Dataset Loader Tool"
+    description: str = ("Loads a specified dataset from the '{}/' folder "
+                       "into a pandas DataFrame. Input must be the dataset name "
+                       "(without .csv extension)." ).format(DATASET_FOLDER)
+
+    def _run(self, dataset_name: str) -> pd.DataFrame | str:
+        try:
+            file_path = os.path.join(DATASET_FOLDER, f"{dataset_name}.csv")
+            if not os.path.exists(file_path):
+                return f"Error: Dataset '{dataset_name}' not found at '{file_path}'."
+            df = pd.read_csv(file_path)
+            # Return the dataframe directly for use by other tools/agents in sequence
+            # Or return a success message if it's just confirming load
+            return df # Or return f"Successfully loaded dataset '{dataset_name}'."
+        except Exception as e:
+            return f"Error loading dataset {dataset_name}: {str(e)}"
+
+class DatasetInfoTool(BaseTool):
+    name: str = "Dataset Information Tool"
+    description: str = ("Provides information about a loaded pandas DataFrame, "
+                       "like column names, data types, head, and basic statistics. "
+                       "Requires the DataFrame object as input (typically from the context or a previous tool).")
+
+    # This tool might be better implemented as direct calls within the agent's logic
+    # if the framework easily supports passing DataFrames.
+    # If not, it might need the dataset *name* and reload it, which is inefficient.
+    # Let's assume for now the DataFrame can be passed in context or the agent can call pandas directly.
+    # A simpler tool might just take the name and return info as string:
+
+    def _run(self, dataset_name: str) -> str:
+         try:
+            file_path = os.path.join(DATASET_FOLDER, f"{dataset_name}.csv")
+            if not os.path.exists(file_path):
+                return f"Error: Dataset '{dataset_name}' not found."
+            df = pd.read_csv(file_path)
+
+            # Use io.StringIO to capture pandas .info() output
+            buffer = io.StringIO()
+            df.info(buf=buffer)
+            info_str = buffer.getvalue()
+
+            return (f"Dataset: {dataset_name}\n"
+                    f"First 3 rows:\n{df.head(3).to_string()}\n\n"
+                    f"Column Names: {df.columns.tolist()}\n\n"
+                    f"Data Info:\n{info_str}\n"
+                    f"Basic Statistics (numerical):\n{df.describe().to_string()}\n\n"
+                    f"Basic Statistics (all):\n{df.describe(include='all').to_string()}")
+         except Exception as e:
+             return f"Error getting info for dataset {dataset_name}: {str(e)}"
+
+# Initialize tools for export
+dataset_loader_tool = DatasetLoadingTool()
+dataset_info_tool = DatasetInfoTool()
+
+# --- Helper function to get DataFrame (used internally by crew definition) ---
+# This avoids needing the loader tool if the crew directly manages the DataFrame object
+def load_dataframe(dataset_name: str) -> pd.DataFrame | None:
+     try:
+        file_path = os.path.join(DATASET_FOLDER, f"{dataset_name}.csv")
+        if not os.path.exists(file_path):
+            print(f"Error: Dataset '{dataset_name}' not found.")
+            return None
+        df = pd.read_csv(file_path)
+        return df
+     except Exception as e:
+         print(f"Error loading dataframe {dataset_name}: {str(e)}")
+         return None
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+
+Create backend/crew_defs.py (Define Agents & Tasks):
+
+import os
+from crewai import Agent, Task, Crew, Process
+from langchain_openai import ChatOpenAI # Or Groq, Anthropic etc.
+from dotenv import load_dotenv
+
+# Import tools and helper
+from data_tools import dataset_info_tool, load_dataframe
+# If using more specific tools:
+# from data_tools import dataset_loader_tool, dataset_column_lister_tool, etc.
+
+load_dotenv()
+
+# --- Configure LLM ---
+# Ensure your .env file has OPENAI_API_KEY and optionally OPENAI_MODEL_NAME
+# Or GROQ_API_KEY, etc. depending on your provider
+llm = ChatOpenAI(
+    # model_name=os.getenv("OPENAI_MODEL_NAME", "gpt-4o"), # Example for OpenAI
+    # api_key=os.getenv("OPENAI_API_KEY")
+    # Or configure for Groq, Anthropic, etc.
+)
+
+# --- Define Agents ---
+
+dataset_analyst_agent = Agent(
+    role='Data Analyst',
+    goal='Analyze the structure and content of the dataset ({dataset_name}) '
+         'to understand its columns, data types, and potential relationships relevant '
+         'to the user request: "{user_request}".',
+    backstory='An expert data analyst skilled in Pandas and exploratory data analysis (EDA). '
+              'You focus on identifying key characteristics of a dataset to inform visualization strategies.',
+    verbose=True,
+    llm=llm,
+    tools=[dataset_info_tool], # Give it tools to inspect the data
+    allow_delegation=False
+)
+
+plotly_strategist_agent = Agent(
+    role='Plotly Visualization Strategist',
+    goal='Based on the data analysis and user request ("{user_request}"), devise 1-3 suitable **Plotly** chart configurations '
+         'for exploratory analysis. Focus on common EDA plots like histograms (for distributions), '
+         'scatter plots (for relationships between numerical variables), bar charts (for categorical counts/aggregations), '
+         'and box plots (for distribution comparison across categories). '
+         'Output the configurations as JSON strings compatible with `react-plotly.js`.',
+    backstory='A specialist in data visualization using Plotly. You know how to translate data insights '
+              'and user needs into effective Plotly JSON configurations (`data` and `layout` objects). '
+              'You prioritize clarity and relevance to the user request.',
+    verbose=True,
+    llm=llm,
+    allow_delegation=False
+    # No direct tools needed if it relies on context from the analyst,
+    # but could have tools for specific Plotly schema checks if needed.
+)
+
+echarts_strategist_agent = Agent(
+    role='ECharts Visualization Strategist',
+    goal='Based on the data analysis and user request ("{user_request}"), devise 1-3 suitable **ECharts** chart configurations '
+         'for exploratory analysis. Focus on common EDA plots like histograms, scatter plots, bar charts, '
+         'and box plots. Output the configurations as JSON strings compatible with `echarts-for-react`.',
+    backstory='A specialist in data visualization using Apache ECharts. You excel at creating ECharts '
+              'option objects (including `series`, `xAxis`, `yAxis`, `title`, `tooltip`, `legend`) that effectively '
+              'represent data insights according to user needs.',
+    verbose=True,
+    llm=llm,
+    allow_delegation=False
+)
+
+# --- Define Tasks ---
+# Task inputs like {dataset_name} and {user_request} will be filled by the `kickoff` method.
+
+analyze_data_task = Task(
+    description='1. Use the Dataset Information Tool to examine the dataset named "{dataset_name}". '
+                '2. Summarize the key findings (columns, types, interesting patterns) '
+                'specifically focusing on aspects relevant to the user request: "{user_request}".',
+    expected_output='A textual summary of the dataset analysis, highlighting columns and characteristics '
+                    'relevant to the user request and suitable for visualization.',
+    agent=dataset_analyst_agent
+)
+
+generate_plotly_task = Task(
+    description='1. Review the data analysis summary and the original user request: "{user_request}". '
+                '2. Identify 1 to 3 appropriate exploratory Plotly charts (histogram, scatter, bar, box plot). '
+                '3. For each chart, determine the necessary columns from the dataset ({dataset_name}). '
+                '4. Construct the Plotly JSON configuration (containing `data` and `layout` keys). '
+                'Ensure the JSON is valid and directly usable by `react-plotly.js`. '
+                'If the data analysis indicates the request cannot be fulfilled (e.g., required columns missing), state that clearly.',
+    expected_output='A list or dictionary containing valid Plotly JSON configuration objects (each having `data` and `layout`). '
+                   'Example for one plot: `{"data": [{"type": "histogram", "x": @COLUMN_DATA@}], "layout": {"title": "Distribution"}}`. '
+                   'Replace @COLUMN_DATA@ conceptually with the data loading mechanism that will happen later. The LLM should specify columns.',
+    agent=plotly_strategist_agent,
+    context=[analyze_data_task] # Depends on the analysis
+)
+
+generate_echarts_task = Task(
+    description='1. Review the data analysis summary and the original user request: "{user_request}". '
+                '2. Identify 1 to 3 appropriate exploratory ECharts charts (histogram, scatter, bar, box plot). '
+                '3. For each chart, determine the necessary columns from the dataset ({dataset_name}). '
+                '4. Construct the ECharts JSON option object (containing `series`, `xAxis`, `yAxis`, etc.). '
+                'Ensure the JSON is valid and directly usable by `echarts-for-react`. '
+                'If the data analysis indicates the request cannot be fulfilled, state that clearly.',
+    expected_output='A list or dictionary containing valid ECharts JSON option objects. '
+                   'Example for one plot: `{"xAxis": {"type": "category", "data": @CATEGORIES@}, "yAxis": {"type": "value"}, "series": [{"type": "bar", "data": @VALUES@}], "title": {"text": "Counts"}}}`. '
+                   'Replace @...@ conceptually.',
+    agent=echarts_strategist_agent,
+    context=[analyze_data_task] # Depends on the analysis
+)
+
+# --- Create Crew ---
+data_viz_crew = Crew(
+    agents=[dataset_analyst_agent, plotly_strategist_agent, echarts_strategist_agent],
+    tasks=[analyze_data_task, generate_plotly_task, generate_echarts_task],
+    process=Process.sequential, # Run tasks one after another
+    verbose=2 # Shows detailed agent actions and LLM calls
+)
+
+# --- Helper Function to Parse LLM Output ---
+# LLMs might output JSON within markdown code blocks or with surrounding text.
+import json
+import re
+
+def extract_json_configs(text: str) -> list | dict | None:
+    """Extracts JSON objects (like Plotly/ECharts configs) from LLM output text."""
+    # Regex to find JSON objects or arrays within ```json ... ``` blocks or just bare {..} or [..]
+    json_pattern = r"```json\s*([\s\S]*?)\s*```|(\{.*\})|(\[.*\])"
+    matches = re.findall(json_pattern, text, re.DOTALL)
+
+    results = []
+    for match in matches:
+        # Find the non-empty capture group
+        json_str = next((g for g in match if g), None)
+        if json_str:
+            try:
+                # Try parsing directly first
+                parsed = json.loads(json_str)
+                results.append(parsed)
+            except json.JSONDecodeError as e:
+                print(f"Warning: Failed to parse potential JSON: {json_str[:100]}... Error: {e}")
+                # Could add more sophisticated cleaning here if needed
+
+    if not results:
+        # Fallback: Try to find any string starting with { or [ and ending with } or ]
+        # This is less reliable but might catch poorly formatted outputs
+        loose_matches = re.finditer(r"(\{[\s\S]*?\})|(\[[\s\S]*?\])", text, re.DOTALL)
+        for loose_match in loose_matches:
+             try:
+                parsed = json.loads(loose_match.group(0))
+                # Avoid adding duplicates if already found by stricter regex
+                if parsed not in results:
+                     results.append(parsed)
+             except json.JSONDecodeError:
+                 continue # Ignore if it's not valid JSON
+
+    if not results:
+        return None
+    # If we expect a list of configs, return the list. If only one config, return the first.
+    # The agent prompts ask for 1-3, so returning a list is safer.
+    # Flatten list if nested [[config1], [config2]] -> [config1, config2]
+    flat_results = []
+    for item in results:
+        if isinstance(item, list):
+            flat_results.extend(item)
+        else:
+            flat_results.append(item)
+
+    return flat_results if flat_results else None
+
+
+# --- Function to Run Crew and Format Output ---
+def generate_visualizations(dataset_name: str, user_request: str) -> dict:
+    """Runs the CrewAI process and attempts to format the output."""
+    inputs = {
+        'dataset_name': dataset_name,
+        'user_request': user_request
+    }
+
+    crew_result = data_viz_crew.kickoff(inputs=inputs)
+
+    # The result often contains the output of the *last* task if sequential.
+    # However, CrewAI's output structure can vary. Let's inspect the tasks' output directly.
+    # Note: Accessing task.output might change in future crewai versions. Check docs.
+    raw_plotly_output = generate_plotly_task.output.raw_output if generate_plotly_task.output else "Error: No Plotly task output."
+    raw_echarts_output = generate_echarts_task.output.raw_output if generate_echarts_task.output else "Error: No ECharts task output."
+
+    print("\n--- Raw Plotly Output ---")
+    print(raw_plotly_output)
+    print("\n--- Raw ECharts Output ---")
+    print(raw_echarts_output)
+
+    plotly_configs = extract_json_configs(raw_plotly_output)
+    echarts_configs = extract_json_configs(raw_echarts_output)
+
+    # --- Load actual data and embed it into the configs ---
+    # This is a crucial step: the LLM provides the *structure* and *column names*,
+    # but we need to inject the actual data arrays here.
+    df = load_dataframe(dataset_name)
+    final_plotly_configs = []
+    final_echarts_configs = []
+
+    if df is not None:
+        if plotly_configs:
+            for config in plotly_configs:
+                try:
+                    # Inject data into Plotly config (example for simple trace)
+                    if 'data' in config and isinstance(config['data'], list):
+                        for trace in config['data']:
+                            if 'x_column' in trace: # Use custom keys LLM was asked to provide
+                                col_name = trace.pop('x_column')
+                                if col_name in df.columns:
+                                    trace['x'] = df[col_name].tolist()
+                                else: raise ValueError(f"Column '{col_name}' not found for x-axis.")
+                            if 'y_column' in trace:
+                                col_name = trace.pop('y_column')
+                                if col_name in df.columns:
+                                    trace['y'] = df[col_name].tolist()
+                                else: raise ValueError(f"Column '{col_name}' not found for y-axis.")
+                            # Add more logic for different keys (e.g., 'z', 'labels', 'values')
+                        final_plotly_configs.append(config)
+                    else:
+                         print(f"Warning: Skipping Plotly config due to missing/invalid 'data' list: {config}")
+                except Exception as e:
+                    print(f"Error processing Plotly config: {e}\nConfig: {config}")
+
+
+        if echarts_configs:
+             for config in echarts_configs:
+                try:
+                    # Inject data into ECharts config (example for simple series)
+                    if 'series' in config and isinstance(config['series'], list):
+                        for series_item in config['series']:
+                            if 'data_column' in series_item: # Use custom key
+                                col_name = series_item.pop('data_column')
+                                if col_name in df.columns:
+                                    # Echarts often needs [[x1,y1], [x2,y2]] format for scatter
+                                    # or just [y1, y2, y3] for bar/line if axis is category
+                                    # This part needs to be smarter based on chart type!
+                                    # Simplistic example assuming direct data array:
+                                    series_item['data'] = df[col_name].tolist()
+                                else: raise ValueError(f"Column '{col_name}' not found for series data.")
+
+                            # Handle axes data if needed (e.g., category axis)
+                            if 'xAxis' in config and 'data_column' in config['xAxis']:
+                                 col_name = config['xAxis'].pop('data_column')
+                                 if col_name in df.columns:
+                                      config['xAxis']['data'] = df[col_name].unique().tolist() # Example for categories
+                                 else: raise ValueError(f"Column '{col_name}' not found for xAxis data.")
+
+                        final_echarts_configs.append(config)
+                    else:
+                         print(f"Warning: Skipping ECharts config due to missing/invalid 'series' list: {config}")
+                except Exception as e:
+                    print(f"Error processing ECharts config: {e}\nConfig: {config}")
+    else:
+        # Handle case where dataframe failed to load
+         return {
+             "error": f"Failed to load dataset '{dataset_name}'.",
+             "plotly_configs": None,
+             "echarts_configs": None,
+             "raw_output": crew_result # Include raw output for debugging
+         }
+
+
+    return {
+        "plotly_configs": final_plotly_configs if final_plotly_configs else None,
+        "echarts_configs": final_echarts_configs if final_echarts_configs else None,
+        "raw_output": crew_result # Include raw output for debugging
+    }
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+
+Modify backend/app.py: Add the new endpoint.
+
+import os
+import pandas as pd
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+
+# Import the CrewAI runner function
+from crew_defs import generate_visualizations
+
+app = Flask(__name__)
+CORS(app) # Enable CORS
+
+DATASET_FOLDER = 'datasets'
+
+# --- API Endpoints ---
+
+@app.route('/api/datasets', methods=['GET'])
+def list_datasets():
+    """Lists available CSV datasets."""
+    try:
+        datasets = [f.replace('.csv', '') for f in os.listdir(DATASET_FOLDER) if f.endswith('.csv')]
+        return jsonify(datasets)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Removed /api/data endpoint as data loading is now handled internally by CrewAI/tools
+# or by the final formatting step. If frontend still needs raw data preview, keep it.
+
+@app.route('/api/generate_plots', methods=['POST'])
+def handle_generate_plots():
+    """Receives dataset name and user request, runs CrewAI, returns plot configs."""
+    data = request.get_json()
+    if not data or 'dataset_name' not in data or 'user_request' not in data:
+        return jsonify({"error": "Missing 'dataset_name' or 'user_request' in POST data"}), 400
+
+    dataset_name = data['dataset_name']
+    user_request = data['user_request']
+
+    # --- Input Validation ---
+    dataset_file = os.path.join(DATASET_FOLDER, f"{dataset_name}.csv")
+    if not os.path.exists(dataset_file):
+         return jsonify({"error": f"Dataset '{dataset_name}' not found on server."}), 404
+    if not user_request.strip():
+         return jsonify({"error": "User request cannot be empty."}), 400
+    # --- End Validation ---
+
+
+    try:
+        # Run the CrewAI process
+        result = generate_visualizations(dataset_name, user_request)
+
+        if "error" in result and result["error"] and not result["plotly_configs"] and not result["echarts_configs"]:
+             # If there was a fatal error reported by the generation function
+             return jsonify({"error": result["error"], "details": result.get("raw_output")}), 500
+
+
+        # Return the generated configurations
+        return jsonify({
+            "message": f"Generated plots for '{dataset_name}' based on request.",
+            "plotlyConfigs": result["plotly_configs"], # Note camelCase for JS
+            "echartsConfigs": result["echarts_configs"], # Note camelCase for JS
+            "debug_raw_crew_output": result.get("raw_output", "N/A") # Optional: send raw output for debugging
+        })
+
+    except Exception as e:
+        # Catch unexpected errors during the process
+        print(f"Error in /api/generate_plots: {e}") # Log the full error server-side
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "An internal server error occurred while generating plots.", "details": str(e)}), 500
+
+# --- Run the App ---
+if __name__ == '__main__':
+    # Set host='0.0.0.0' to be accessible on the network if needed
+    app.run(debug=True, port=5001)
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+
+Step 2: Frontend Modifications (React)
+
+Create frontend/src/components/UserRequestInput.js:
+
+import React, { useState } from 'react';
+
+function UserRequestInput({ onSubmit, isLoading }) {
+  const [request, setRequest] = useState('');
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    if (request.trim()) {
+      onSubmit(request.trim());
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} style={{ margin: '20px 0' }}>
+      <label htmlFor="user-request" style={{ marginRight: '10px' }}>
+        Enter your analysis request:
+      </label>
+      <input
+        type="text"
+        id="user-request"
+        value={request}
+        onChange={(e) => setRequest(e.target.value)}
+        placeholder="e.g., 'Show distribution of age'"
+        style={{ width: '300px', marginRight: '10px' }}
+        disabled={isLoading}
+      />
+      <button type="submit" disabled={isLoading || !request.trim()}>
+        {isLoading ? 'Generating...' : 'Generate Plots'}
+      </button>
+    </form>
+  );
+}
+
+export default UserRequestInput;
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+JavaScript
+IGNORE_WHEN_COPYING_END
+
+Modify frontend/src/App.js:
+
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom'; // Removed useParams for now
+import DatasetSelector from './components/DatasetSelector';
+import UserRequestInput from './components/UserRequestInput'; // Import new component
+import PlotlyDashboard from './components/PlotlyDashboard';
+import EchartsDashboard from './components/EchartsDashboard';
+import './App.css';
+
+const API_BASE_URL = 'http://localhost:5001/api';
+
+function App() {
+  const [datasets, setDatasets] = useState([]);
+  const [selectedDataset, setSelectedDataset] = useState('');
+  const [userRequest, setUserRequest] = useState(''); // State for user request
+  const [plotlyConfigs, setPlotlyConfigs] = useState(null); // State for Plotly configs
+  const [echartsConfigs, setEchartsConfigs] = useState(null); // State for ECharts configs
+  const [isLoadingDatasets, setIsLoadingDatasets] = useState(false);
+  const [isGeneratingPlots, setIsGeneratingPlots] = useState(false); // Loading state for generation
+  const [error, setError] = useState(null);
+  const [crewResponse, setCrewResponse] = useState(null); // To show messages or raw output
+
+  // Fetch dataset list on mount
+  useEffect(() => {
+    setIsLoadingDatasets(true);
+    axios.get(`${API_BASE_URL}/datasets`)
+      .then(response => {
+        setDatasets(response.data);
+        setError(null);
+      })
+      .catch(err => {
+        console.error("Error fetching datasets:", err);
+        setError('Failed to load datasets. Is the backend running?');
+        setDatasets([]);
+      })
+      .finally(() => setIsLoadingDatasets(false));
+  }, []);
+
+  // Function to handle plot generation request
+  const handleGeneratePlots = (request) => {
+    if (!selectedDataset) {
+      setError("Please select a dataset first.");
+      return;
+    }
+    setUserRequest(request); // Store the request
+    setIsGeneratingPlots(true);
+    setError(null);
+    setPlotlyConfigs(null); // Clear previous plots
+    setEchartsConfigs(null);
+    setCrewResponse(null);
+
+    axios.post(`${API_BASE_URL}/generate_plots`, {
+      dataset_name: selectedDataset,
+      user_request: request,
+    })
+      .then(response => {
+        setPlotlyConfigs(response.data.plotlyConfigs || []); // Expecting an array or null
+        setEchartsConfigs(response.data.echartsConfigs || []); // Expecting an array or null
+        setCrewResponse(response.data.message); // Show success message
+        setError(null);
+         // Optionally log raw output for debugging in console
+        console.log("Crew Raw Output:", response.data.debug_raw_crew_output);
+      })
+      .catch(err => {
+        console.error("Error generating plots:", err);
+        const errorMsg = err.response?.data?.error || 'Failed to generate plots.';
+        const errorDetails = err.response?.data?.details || err.message;
+        setError(`${errorMsg} ${errorDetails ? `(${errorDetails})` : ''}`);
+        setPlotlyConfigs(null);
+        setEchartsConfigs(null);
+        setCrewResponse(null);
+      })
+      .finally(() => setIsGeneratingPlots(false));
+  };
+
+   // Reset plots when dataset changes
+   useEffect(() => {
+        setPlotlyConfigs(null);
+        setEchartsConfigs(null);
+        setUserRequest('');
+        setError(null);
+        setCrewResponse(null);
+   }, [selectedDataset]);
+
+
+  return (
+    <Router>
+      <div className="App">
+        <h1>CrewAI Data Visualization</h1>
+
+        <DatasetSelector
+          datasets={datasets}
+          selectedDataset={selectedDataset}
+          onDatasetChange={setSelectedDataset}
+          isLoading={isLoadingDatasets}
+        />
+
+        {selectedDataset && (
+          <UserRequestInput
+            onSubmit={handleGeneratePlots}
+            isLoading={isGeneratingPlots}
+          />
+        )}
+
+        {isGeneratingPlots && <p>Generating plots, please wait...</p>}
+        {error && <p style={{ color: 'red' }}>Error: {error}</p>}
+        {crewResponse && !error && <p style={{ color: 'green' }}>{crewResponse}</p>}
+
+        {/* Navigation might not be needed if both dashboards show results simultaneously */}
+        {/* Or keep navigation to switch between views if preferred */}
+         {(plotlyConfigs || echartsConfigs) && !isGeneratingPlots && (
+           <nav style={{ margin: "20px 0" }}>
+             Displaying results for: "{userRequest}" on dataset "{selectedDataset}"
+             {/* Example: Link to specific views if desired
+             <Link to={`/plotly`}>Plotly View</Link> |{' '}
+             <Link to={`/echarts`}>ECharts View</Link>
+             */}
+           </nav>
+         )}
+
+        {/* Render dashboards directly, passing the configurations */}
+        {plotlyConfigs !== null && (
+             <PlotlyDashboard configs={plotlyConfigs} />
+         )}
+         {echartsConfigs !== null && (
+             <EchartsDashboard configs={echartsConfigs} />
+         )}
+
+        {/* Optional: Use Routes if you prefer separate pages */}
+        {/* <Routes>
+             <Route path="/plotly" element={<PlotlyDashboard configs={plotlyConfigs} />} />
+             <Route path="/echarts" element={<EchartsDashboard configs={echartsConfigs} />} />
+             <Route path="/" element={ <p>Select dataset and enter request.</p>} />
+        </Routes> */}
+
+      </div>
+    </Router>
+  );
+}
+
+export default App;
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+JavaScript
+IGNORE_WHEN_COPYING_END
+
+Modify frontend/src/components/PlotlyDashboard.js: Adapt to receive an array of configurations.
+
+import React from 'react';
+import Plot from 'react-plotly.js';
+
+function PlotlyDashboard({ configs }) {
+  // Expect configs to be an array of { data: [...], layout: {...} } objects or null/empty
+  if (!configs || configs.length === 0) {
+     // Don't render anything, or a placeholder, if no configs are available
+    return null; // Or <p>No Plotly plots generated.</p>;
+  }
+
+  return (
+    <div>
+      <h2>Plotly Plots</h2>
+      {configs.map((config, index) => (
+        <div key={index} style={{ marginBottom: '30px', border: '1px solid #eee', padding: '10px' }}>
+          <Plot
+            data={config.data} // Assumes LLM provided correct structure
+            layout={config.layout} // Assumes LLM provided correct structure
+            style={{ width: '100%', height: '400px' }}
+            onError={(err) => console.error("Plotly error:", err)} // Add error handler
+          />
+          {/* Optionally display the config for debugging */}
+          {/* <details>
+              <summary>Plotly Config {index + 1}</summary>
+              <pre style={{ fontSize: '0.8em', background: '#f0f0f0' }}>
+                  {JSON.stringify(config, null, 2)}
+              </pre>
+          </details> */}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default PlotlyDashboard;
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+JavaScript
+IGNORE_WHEN_COPYING_END
+
+Modify frontend/src/components/EchartsDashboard.js: Adapt to receive an array of configurations.
+
+import React from 'react';
+import ReactECharts from 'echarts-for-react';
+
+function EchartsDashboard({ configs }) {
+   // Expect configs to be an array of ECharts option objects or null/empty
+  if (!configs || configs.length === 0) {
+    return null; // Or <p>No ECharts plots generated.</p>;
+  }
+
+  return (
+    <div>
+      <h2>ECharts Plots</h2>
+      {configs.map((config, index) => (
+        <div key={index} style={{ marginBottom: '30px', border: '1px solid #eee', padding: '10px' }}>
+           {/* Add a title if the config doesn't include one */}
+           {!config.title?.text && <h3>EChart Plot {index + 1}</h3>}
+           <ReactECharts
+             option={config} // Assumes LLM provided correct structure
+             style={{ height: '400px', width: '100%' }}
+             notMerge={true} // Important for dynamic updates
+             lazyUpdate={true}
+             onEvents={{ // Optional: Add event handlers if needed
+                // 'click': (params) => console.log('ECharts click:', params),
+             }}
+           />
+           {/* <details>
+              <summary>ECharts Config {index + 1}</summary>
+              <pre style={{ fontSize: '0.8em', background: '#f0f0f0' }}>
+                  {JSON.stringify(config, null, 2)}
+              </pre>
+          </details> */}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default EchartsDashboard;
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+JavaScript
+IGNORE_WHEN_COPYING_END
+
+Step 3: Running the Application
+
+Start Backend:
+
+cd backend
+source venv/bin/activate
+flask run --port=5001
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Bash
+IGNORE_WHEN_COPYING_END
+
+Start Frontend:
+
+cd frontend
+npm start
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Bash
+IGNORE_WHEN_COPYING_END
+
+Interact: Open your browser to http://localhost:3000 (or your React app's port). Select a dataset, type a request (e.g., "show histogram of age", "scatter plot of salary vs experience", "bar chart of department counts"), and click "Generate Plots".
+
+Key Considerations and Challenges:
+
+LLM Prompting: The quality of the generated plots heavily depends on the prompts given to the CrewAI agents (goal, backstory, description, expected_output). You will likely need to iterate and refine these prompts significantly.
+
+LLM Output Parsing: LLMs don't always produce perfectly formatted JSON. The extract_json_configs function and the data injection logic in generate_visualizations are crucial and may need robust error handling and potentially more sophisticated parsing/cleaning.
+
+Data Injection: The backend code that injects real data (df[col_name].tolist()) into the LLM's template configuration needs to be smart. It must correctly identify where the data goes based on the keys the LLM was instructed to use (x_column, y_column, data_column, etc.) and format it according to the specific requirements of Plotly traces and ECharts series. This part is complex and error-prone.
+
+Tool Design: The DatasetInfoTool provides general info. You might need more specific tools (e.g., get_correlation(col1, col2), get_group_aggregation(group_col, agg_col, func)) for more complex requests.
+
+Cost/Latency: LLM calls take time and may incur costs depending on the provider and model used. The process will be slower than the previous static version.
+
+Error Handling: Implement comprehensive error handling at each stage (API call, CrewAI execution, JSON parsing, data injection, frontend rendering).
+
+Security: Ensure API keys are never exposed client-side or committed to version control. Use .env and .gitignore correctly.
+
+This setup provides a powerful but more complex way to generate visualizations dynamically based on natural language requests. Expect to spend time debugging and refining the agent prompts and the data processing logic.

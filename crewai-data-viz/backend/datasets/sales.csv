@@ -1,0 +1,6 @@
+date,product,quantity,price,revenue
+2023-01-01,Widget A,10,25.99,259.9
+2023-01-02,Widget B,15,15.49,232.35
+2023-01-03,Widget A,8,25.99,207.92
+2023-01-04,Widget C,12,32.5,390.0
+2023-01-05,Widget B,20,15.49,309.8

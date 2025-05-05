@@ -1,0 +1,11 @@
+flask
+flask-cors
+python-dotenv
+pandas
+crewai
+crewai[tools]
+langchain-community # For Ollama integration
+# Add other langchain providers if needed, e.g.:
+# langchain-openai
+# langchain-groq
+# langchain-anthropic

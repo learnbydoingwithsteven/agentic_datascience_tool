@@ -1,0 +1,4 @@
+build an app with backend and frontend, lets start from easy version. 1. allow user to choose the existing dataset. 2. let the react ui dashboard to show different plot combo using plotly. 3. let the second react ui dashboard to show different plot combo using echart.
+
+now lets change it to allow crewai agent group, to handle a user request on any dataset, and produce output, one version plotly one version echart, starting from exploratory plots
+
