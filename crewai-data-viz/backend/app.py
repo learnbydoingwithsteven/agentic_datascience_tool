@@ -4,10 +4,22 @@ import time
 import json
 import logging
 import pandas as pd
+import numpy as np
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import traceback
 from typing import Dict, List, Any, Optional, Union
+
+# Custom JSON encoder to handle numpy arrays
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        return super(NumpyEncoder, self).default(obj)
 
 # Configure logging
 logging.basicConfig(
@@ -88,39 +100,65 @@ def validate_dataset_name(dataset_name: str) -> tuple[bool, Optional[str]]:
 
 # --- API Endpoints ---
 
-@app.route('/api/visualizations/<path:filename>', methods=['GET'])
-def get_visualization(filename):
-    """Serves visualization files from the temp_visualizations folder.
+from plot_storage import PlotStorage
+
+@app.route('/api/visualizations/<plot_type>/<plot_id>', methods=['GET'])
+def get_visualization(plot_type, plot_id):
+    """Serves visualization data from the plot storage system.
 
     Args:
-        filename: Name of the visualization file to retrieve
+        plot_type: Type of plot ('plotly' or 'echarts')
+        plot_id: Unique ID of the plot
 
     Returns:
-        JSON visualization file or 404 if not found
+        JSON visualization data or 404 if not found
     """
+    # Validate plot type
+    if plot_type not in ['plotly', 'echarts']:
+        logger.warning(f"Invalid plot type: {plot_type}")
+        return jsonify({"error": "Invalid plot type. Must be 'plotly' or 'echarts'."}), 400
+
     # Security check to prevent directory traversal
-    if '..' in filename or '/' in filename or '\\' in filename:
-        logger.warning(f"Invalid visualization filename format: {filename}")
-        return jsonify({"error": "Invalid filename format."}), 400
-
-    # Construct the path to the visualization file
-    viz_path = os.path.join(BASE_DIR, 'temp_visualizations', filename)
-
-    # Check if the file exists
-    if not os.path.exists(viz_path) or not os.path.isfile(viz_path):
-        logger.warning(f"Visualization file not found: {viz_path}")
-        return jsonify({"error": f"Visualization '{filename}' not found."}), 404
+    if '..' in plot_id or '/' in plot_id or '\\' in plot_id:
+        logger.warning(f"Invalid plot ID format: {plot_id}")
+        return jsonify({"error": "Invalid plot ID format."}), 400
 
     try:
-        # Read the visualization file
-        with open(viz_path, 'r') as f:
-            viz_data = json.load(f)
+        # Retrieve plot from storage
+        plot_data = PlotStorage.get_plot(plot_id, plot_type)
+        
+        if plot_data is None:
+            logger.warning(f"Plot not found: {plot_type}/{plot_id}")
+            return jsonify({"error": f"Plot '{plot_id}' not found."}), 404
 
-        logger.info(f"Successfully retrieved visualization: {filename}")
-        return jsonify(viz_data)
+        logger.info(f"Successfully retrieved plot: {plot_type}/{plot_id}")
+        return jsonify(plot_data)
     except Exception as e:
-        logger.error(f"Error retrieving visualization '{filename}': {e}")
-        return jsonify({"error": f"Failed to retrieve visualization: {str(e)}"}), 500
+        logger.error(f"Error retrieving plot '{plot_id}': {e}")
+        return jsonify({"error": f"Failed to retrieve plot: {str(e)}"}), 500
+
+@app.route('/api/visualizations', methods=['GET'])
+def list_visualizations():
+    """Lists all available visualizations, optionally filtered by dataset.
+
+    Query Parameters:
+        dataset: Optional name of dataset to filter by
+
+    Returns:
+        JSON list of visualization metadata
+    """
+    try:
+        # Get dataset filter from query parameters
+        dataset_name = request.args.get('dataset')
+        
+        # Get list of plots from storage
+        plots = PlotStorage.list_plots(dataset_name)
+        
+        logger.info(f"Listed {len(plots)} plots{' for dataset ' + dataset_name if dataset_name else ''}")
+        return jsonify(plots)
+    except Exception as e:
+        logger.error(f"Error listing plots: {e}")
+        return jsonify({"error": f"Failed to list plots: {str(e)}"}), 500
 
 @app.route('/api/datasets', methods=['GET'])
 def list_datasets():
@@ -334,6 +372,8 @@ save_plotly_fig(fig)
             logger.error(traceback.format_exc())
             # Continue to the regular flow if the direct handler fails
 
+
+
     # Handle box plot of all columns
     elif dataset_name == "iris" and "box" in user_request.lower() and any(phrase in user_request.lower() for phrase in ["all columns", "all features", "all variables"]):
         logger.info("Detected request for box plot of all columns - using direct handler")
@@ -390,8 +430,12 @@ save_plotly_fig(fig)
     import uuid
 
     try:
+        # Get model_id from request if provided
+        model_id = data.get('model_id', 'ollama/qwen3:4b')  # Default to Qwen3 4B
+        logger.info(f"Using model: {model_id}")
+
         # Run the CrewAI process to generate visualizations
-        result = generate_visualizations(dataset_name, user_request)
+        result = generate_visualizations(dataset_name, user_request, model_id)
 
         # Check if the generation function reported a fatal error
         if "error" in result and result["error"] and not result.get("plotly_configs") and not result.get("echarts_configs"):
@@ -480,7 +524,7 @@ save_plotly_fig(fig)
                     fig_id = str(uuid.uuid4())
                     fig_path = os.path.join(temp_dir, f'plotly_{fig_id}.json')
                     with open(fig_path, 'w') as f:
-                        f.write(json.dumps(fig.to_dict()))
+                        f.write(json.dumps(fig.to_dict(), cls=NumpyEncoder))
 
                     viz_files.append({
                         "filename": f'plotly_{fig_id}.json',
@@ -500,7 +544,7 @@ save_plotly_fig(fig)
                         fig_id = str(uuid.uuid4())
                         fig_path = os.path.join(temp_dir, f'plotly_{fig_id}.json')
                         with open(fig_path, 'w') as f:
-                            f.write(json.dumps(fig.to_dict()))
+                            f.write(json.dumps(fig.to_dict(), cls=NumpyEncoder))
 
                         viz_files.append({
                             "filename": f'plotly_{fig_id}.json',
@@ -520,7 +564,7 @@ save_plotly_fig(fig)
                         fig_id = str(uuid.uuid4())
                         fig_path = os.path.join(temp_dir, f'plotly_{fig_id}.json')
                         with open(fig_path, 'w') as f:
-                            f.write(json.dumps(fig.to_dict()))
+                            f.write(json.dumps(fig.to_dict(), cls=NumpyEncoder))
 
                         viz_files.append({
                             "filename": f'plotly_{fig_id}.json',
@@ -539,7 +583,7 @@ save_plotly_fig(fig)
                         fig_id = str(uuid.uuid4())
                         fig_path = os.path.join(temp_dir, f'plotly_{fig_id}.json')
                         with open(fig_path, 'w') as f:
-                            f.write(json.dumps(fig.to_dict()))
+                            f.write(json.dumps(fig.to_dict(), cls=NumpyEncoder))
 
                         viz_files.append({
                             "filename": f'plotly_{fig_id}.json',
@@ -621,6 +665,30 @@ def list_visualizations():
         logger.error(f"Error listing visualizations in {viz_folder}: {e}")
         return jsonify({"error": "An error occurred while listing visualizations."}), 500
 
+@app.route('/api/models', methods=['GET'])
+def list_models():
+    """Lists available LLM models for visualization generation.
+
+    Returns:
+        JSON response with list of available models
+    """
+    try:
+        # Define available models
+        # In a production environment, this could be dynamically fetched from Ollama API
+        models = [
+            {"id": "ollama/qwen3:4b", "name": "Qwen3 4B (Default)"},
+            {"id": "ollama/llama3:8b", "name": "Llama3 8B"},
+            {"id": "ollama/mistral:7b", "name": "Mistral 7B"},
+            {"id": "ollama/phi3:mini", "name": "Phi-3 Mini"},
+            {"id": "ollama/gemma:7b", "name": "Gemma 7B"}
+        ]
+
+        logger.info(f"Returning {len(models)} available LLM models")
+        return jsonify(models)
+    except Exception as e:
+        logger.error(f"Error listing models: {e}")
+        return jsonify({"error": "An error occurred while listing models."}), 500
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Simple health check endpoint to verify the API is running."""
@@ -633,6 +701,7 @@ def health_check():
             "/api/generate_plots",
             "/api/visualizations",
             "/api/visualizations/<filename>",
+            "/api/models",
             "/api/health"
         ]
     })

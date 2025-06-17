@@ -249,30 +249,28 @@ class PythonCodeExecutionTool(BaseTool):
 
             # Add helper functions to the execution environment
             helper_code = """
+# Import plot storage
+from plot_storage import PlotStorage
+
 # Helper function to save Plotly figure for frontend
 def save_plotly_fig(fig):
     if fig is not None:
-        import os
-        import json
-        import uuid
         import plotly
-
-        # Create a unique ID for this figure
-        fig_id = str(uuid.uuid4())
-
-        # Save the figure as JSON in the temp folder
-        temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_visualizations')
-        if not os.path.exists(temp_dir):
-            os.makedirs(temp_dir)
-
-        # Save the figure as JSON
-        fig_path = os.path.join(temp_dir, f'plotly_{fig_id}.json')
-        with open(fig_path, 'w') as f:
-            f.write(json.dumps(fig.to_dict()))
-
-        # Also add to the in-memory list
-        plotly_figs.append(fig)
-
+        
+        # Convert figure to dictionary
+        fig_dict = fig.to_dict()
+        
+        # Save using plot storage system
+        fig_id = PlotStorage.save_plot(
+            plot_data=fig_dict,
+            plot_type='plotly',
+            dataset_name=dataset_name if 'dataset_name' in locals() else None
+        )
+        
+        # Add to in-memory list if saved successfully
+        if fig_id:
+            plotly_figs.append(fig)
+            
         # Return the figure ID for reference
         return fig_id
     return None
@@ -280,120 +278,36 @@ def save_plotly_fig(fig):
 # Helper function to save ECharts configuration for frontend
 def save_echarts_config(config):
     if config is not None:
-        import os
-        import json
-        import uuid
-
-        # Create a unique ID for this config
-        config_id = str(uuid.uuid4())
-
-        # Save the config as JSON in the temp folder
-        temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_visualizations')
-        if not os.path.exists(temp_dir):
-            os.makedirs(temp_dir)
-
-        # Save the config as JSON
-        config_path = os.path.join(temp_dir, f'echarts_{config_id}.json')
-        with open(config_path, 'w') as f:
-            f.write(json.dumps(config))
-
-        # Also add to the in-memory list
-        echarts_configs.append(config)
-
+        # Save using plot storage system
+        config_id = PlotStorage.save_plot(
+            plot_data=config,
+            plot_type='echarts',
+            dataset_name=dataset_name if 'dataset_name' in locals() else None
+        )
+        
+        # Add to in-memory list if saved successfully
+        if config_id:
+            echarts_configs.append(config)
+            
         # Return the config ID for reference
         return config_id
     return None
 
 # Auto-generate basic Plotly figures if none were created
 def ensure_plotly_output():
+    # This function is called after the agent's code execution.
+    # Previously, it would generate default plots if the agent's code didn't produce any.
+    # To ensure all plots are agent-generated, this fallback logic has been removed.
     if len(plotly_figs) == 0 and df is not None:
-        try:
-            # Get column types
-            numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-            categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
-            datetime_cols = df.select_dtypes(include=['datetime']).columns.tolist()
-
-            # Generate visualizations based on available column types
-            visualizations_created = 0
-
-            # 1. If we have numeric columns, create a correlation heatmap
-            if len(numeric_cols) >= 2:
-                corr_df = df[numeric_cols].corr()
-                fig = px.imshow(corr_df,
-                               title='Correlation Heatmap',
-                               labels=dict(color="Correlation"),
-                               color_continuous_scale='RdBu_r')
-                save_plotly_fig(fig)
-                visualizations_created += 1
-
-            # 2. If we have at least one numeric and one categorical column, create a box plot
-            if len(numeric_cols) >= 1 and len(categorical_cols) >= 1:
-                # Use the first categorical column and first numeric column
-                cat_col = categorical_cols[0]
-                num_col = numeric_cols[0]
-
-                # Only use categorical columns with reasonable number of categories
-                if df[cat_col].nunique() <= 10:
-                    fig = px.box(df, x=cat_col, y=num_col,
-                                title=f'Distribution of {num_col} by {cat_col}')
-                    save_plotly_fig(fig)
-                    visualizations_created += 1
-
-            # 3. If we have at least two numeric columns, create a scatter plot
-            if len(numeric_cols) >= 2:
-                fig = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1],
-                               title=f'{numeric_cols[1]} vs {numeric_cols[0]}',
-                               opacity=0.7)
-                save_plotly_fig(fig)
-                visualizations_created += 1
-
-            # 4. For each numeric column, create a histogram
-            for i, col in enumerate(numeric_cols[:2]):  # Limit to first 2 numeric columns
-                fig = px.histogram(df, x=col,
-                                  title=f'Distribution of {col}',
-                                  opacity=0.7)
-                save_plotly_fig(fig)
-                visualizations_created += 1
-
-            # 5. If we have a datetime column and a numeric column, create a line chart
-            if len(datetime_cols) >= 1 and len(numeric_cols) >= 1:
-                fig = px.line(df, x=datetime_cols[0], y=numeric_cols[0],
-                             title=f'{numeric_cols[0]} Over Time')
-                save_plotly_fig(fig)
-                visualizations_created += 1
-
-            # If no visualizations were created, create a simple table view
-            if visualizations_created == 0 and len(df) > 0:
-                # Create a table view of the data
-                fig = go.Figure(data=[go.Table(
-                    header=dict(values=list(df.columns),
-                                fill_color='paleturquoise',
-                                align='left'),
-                    cells=dict(values=[df[col] for col in df.columns],
-                              fill_color='lavender',
-                              align='left'))
-                ])
-                fig.update_layout(title='Data Table View')
-                save_plotly_fig(fig)
-
-        except Exception as e:
-            print(f"Could not auto-generate Plotly figure: {e}")
-            # Last resort - create a simple table view
-            try:
-                # Create a table view of the first 10 rows
-                sample_df = df.head(10)
-                fig = go.Figure(data=[go.Table(
-                    header=dict(values=list(sample_df.columns),
-                                fill_color='paleturquoise',
-                                align='left'),
-                    cells=dict(values=[sample_df[col] for col in sample_df.columns],
-                              fill_color='lavender',
-                              align='left'))
-                ])
-                fig.update_layout(title='Data Sample (First 10 Rows)')
-                save_plotly_fig(fig)
-            except Exception as e2:
-                print(f"Failed to create table view: {e2}")
+        # Log that no Plotly figures were generated by the agent's code and no fallbacks will be created.
+        print("ensure_plotly_output: No Plotly figures were generated by the agent's code. No default fallbacks will be created.")
+    elif len(plotly_figs) > 0:
+        # Log that Plotly figures were successfully generated by the agent's code.
+        print(f"ensure_plotly_output: {len(plotly_figs)} Plotly figure(s) were generated by the agent's code.")
+    elif df is None:
+        # Log that the DataFrame is not available, so no plots could be generated (by agent or fallback).
+        print("ensure_plotly_output: DataFrame (df) is None. Cannot generate or check for plots.")
+    # The responsibility to generate plots now solely lies with the Visualization Coder and Executor agents.
 """
             # Combine helper code with user code and add auto-generation at the end
             full_code = helper_code + "\n" + fixed_code + "\n\n# Ensure we have at least one visualization\nensure_plotly_output()"

@@ -1,0 +1,65 @@
+.model-selector {
+  margin-bottom: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.model-selector label {
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+.model-selector select {
+  padding: 8px 12px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 14px;
+  background-color: white;
+  cursor: pointer;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.model-selector select:hover:not(.disabled) {
+  border-color: #888;
+}
+
+.model-selector select:focus {
+  outline: none;
+  border-color: #4a90e2;
+  box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.2);
+}
+
+.model-selector select.disabled {
+  background-color: #f5f5f5;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.model-selector .error-message {
+  color: #d32f2f;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+/* Add a small info icon next to the label */
+.model-selector label::after {
+  content: "ℹ️";
+  margin-left: 5px;
+  font-size: 12px;
+  cursor: help;
+}
+
+/* Tooltip for the info icon */
+.model-selector label:hover::before {
+  content: "Select the LLM model to use for generating visualizations";
+  position: absolute;
+  background: #333;
+  color: white;
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 1;
+  transform: translateY(-100%);
+}

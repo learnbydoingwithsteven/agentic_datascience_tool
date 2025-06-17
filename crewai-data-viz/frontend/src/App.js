@@ -4,6 +4,7 @@ import axios from 'axios';
 import { BrowserRouter as Router } from 'react-router-dom';
 import DatasetSelector from './components/DatasetSelector';
 import UserRequestInput from './components/UserRequestInput';
+import ModelSelector from './components/ModelSelector';
 import PlotlyDashboard from './components/PlotlyDashboard';
 import EchartsDashboard from './components/EchartsDashboard';
 import CodeDisplay from './components/CodeDisplay';
@@ -36,6 +37,7 @@ function App() {
   // State management
   const [datasets, setDatasets] = useState([]);
   const [selectedDataset, setSelectedDataset] = useState('');
+  const [selectedModel, setSelectedModel] = useState('ollama/qwen3:4b');
   const [userRequest, setUserRequest] = useState('');
   const [plotlyConfigs, setPlotlyConfigs] = useState(null);
   const [echartsConfigs, setEchartsConfigs] = useState(null);
@@ -131,11 +133,12 @@ function App() {
     setExecutorOutput(null);
 
     try {
-      console.log(`Sending request to generate plots: Dataset=${selectedDataset}, Request=${request}`);
+      console.log(`Sending request to generate plots: Dataset=${selectedDataset}, Request=${request}, Model=${selectedModel}`);
 
       const response = await axios.post(`${API_BASE_URL}/generate_plots`, {
         dataset_name: selectedDataset,
         user_request: request,
+        model_id: selectedModel
       });
 
       console.log("Backend response:", response.data);
@@ -200,6 +203,13 @@ function App() {
               selectedDataset={selectedDataset}
               onDatasetChange={setSelectedDataset}
               isLoading={isLoadingDatasets}
+            />
+
+            {/* Model Selector */}
+            <ModelSelector
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+              isDisabled={isGeneratingPlots}
             />
 
             {/* Dataset Info Display */}
